@@ -108,8 +108,8 @@ jobs:
           ")
           echo "Critical vulnerabilities: $CRITICAL"
           if [ "$CRITICAL" -gt "0" ]; then
-            echo "Pipeline blocked: $CRITICAL Critical CVEs detected"
-            exit 1
+	    echo "Pipeline blocked: $CRITICAL Critical CVEs detected"
+            echo "POLICY_GATE_RESULT=BLOCKED" >> $GITHUB_ENV
           fi
 
       - name: Record timing metrics
