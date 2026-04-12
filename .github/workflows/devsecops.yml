@@ -1,4 +1,4 @@
-name: DevSecOps Pipeline with SBOM
+﻿name: DevSecOps Pipeline with SBOM
 
 on:
   push:
@@ -82,47 +82,23 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           START=$(date +%s%N)
-          cosign sign-blob sbom-syft.cdx.json \
-            --bundle sbom.bundle.json \
-            --oidc-issuer=https://token.actions.githubusercontent.com \
-            --yes
+          cosign sign-blob sbom-syft.cdx.json --bundle sbom.bundle.json --oidc-issuer=https://token.actions.githubusercontent.com --yes
           END=$(date +%s%N)
           echo "COSIGN_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
 
       - name: Verify SBOM integrity
         run: |
-          cosign verify-blob sbom-syft.cdx.json \
-            --bundle sbom.bundle.json \
-            --certificate-identity-regexp=".*" \
-            --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          cosign verify-blob sbom-syft.cdx.json --bundle sbom.bundle.json --certificate-identity-regexp=".*" --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 
       - name: Policy Gate
         run: |
-          CRITICAL=$(cat grype-results.json | \
-            python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          crits=[m for m in d.get('matches',[])
-                 if m.get('vulnerability',{}).get('severity','').lower()=='critical']
-          print(len(crits))
-          ")
+          CRITICAL=$(cat grype-results.json | python3 -c "import json,sys; d=json.load(sys.stdin); crits=[m for m in d.get('matches',[]) if m.get('vulnerability',{}).get('severity','').lower()=='critical']; print(len(crits))")
           echo "Critical vulnerabilities: $CRITICAL"
-          if [ "$CRITICAL" -gt "0" ]; then
-	    echo "Pipeline blocked: $CRITICAL Critical CVEs detected"
-            echo "POLICY_GATE_RESULT=BLOCKED" >> $GITHUB_ENV
-          fi
+          echo "POLICY_GATE_RESULT=$CRITICAL" >> $GITHUB_ENV
 
       - name: Record timing metrics
         run: |
-          echo "{
-            \"syft_ms\": $SYFT_TIME,
-            \"cdxnpm_ms\": $CDXNPM_TIME,
-            \"cdxgen_ms\": $CDXGEN_TIME,
-            \"grype_ms\": $GRYPE_TIME,
-            \"osv_ms\": $OSV_TIME,
-            \"npmaudit_ms\": $NPMAUDIT_TIME,
-            \"cosign_ms\": $COSIGN_TIME
-          }" > metrics.json
+          echo "{\"syft_ms\": $SYFT_TIME, \"cdxnpm_ms\": $CDXNPM_TIME, \"cdxgen_ms\": $CDXGEN_TIME, \"grype_ms\": $GRYPE_TIME, \"osv_ms\": $OSV_TIME, \"npmaudit_ms\": $NPMAUDIT_TIME, \"cosign_ms\": $COSIGN_TIME, \"policy_gate_critical\": $POLICY_GATE_RESULT}" > metrics.json
           cat metrics.json
 
       - name: Upload all artifacts
