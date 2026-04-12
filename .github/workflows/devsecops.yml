@@ -9,6 +9,9 @@ on:
 jobs:
   devsecops:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout source code
@@ -77,11 +80,14 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign SBOM with Cosign
+- name: Sign SBOM with Cosign
+        env:
+          COSIGN_EXPERIMENTAL: "1"
         run: |
           START=$(date +%s%N)
           cosign sign-blob sbom-syft.cdx.json \
             --bundle sbom.bundle.json \
+            --oidc-issuer=https://token.actions.githubusercontent.com \
             --yes
           END=$(date +%s%N)
           echo "COSIGN_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
