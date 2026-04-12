@@ -1,0 +1,140 @@
+name: DevSecOps Pipeline with SBOM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  devsecops:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Stage 2: SBOM Generation
+      - name: Generate SBOM with Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          START=$(date +%s%N)
+          syft . -o cyclonedx-json=sbom-syft.cdx.json
+          END=$(date +%s%N)
+          echo "SYFT_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
+
+      - name: Generate SBOM with CycloneDX-npm
+        run: |
+          npm install -g @cyclonedx/cyclonedx-npm
+          START=$(date +%s%N)
+          cyclonedx-npm --output-format JSON --output-file sbom-cdxnpm.cdx.json
+          END=$(date +%s%N)
+          echo "CDXNPM_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
+
+      - name: Generate SBOM with cdxgen
+        run: |
+          npm install -g @cyclonedx/cdxgen
+          START=$(date +%s%N)
+          cdxgen -o sbom-cdxgen.cdx.json
+          END=$(date +%s%N)
+          echo "CDXGEN_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
+
+      # Stage 3: Vulnerability Scanning
+      - name: Scan with Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          START=$(date +%s%N)
+          grype sbom:sbom-syft.cdx.json -o json --file grype-results.json
+          END=$(date +%s%N)
+          echo "GRYPE_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
+
+      - name: Scan with OSV-Scanner
+        run: |
+          curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+          START=$(date +%s%N)
+          osv-scanner --sbom=sbom-syft.cdx.json --format json > osv-results.json || true
+          END=$(date +%s%N)
+          echo "OSV_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
+
+      - name: Scan with npm audit
+        run: |
+          START=$(date +%s%N)
+          npm audit --json > npm-audit-results.json || true
+          END=$(date +%s%N)
+          echo "NPMAUDIT_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
+
+      # Stage 4: SBOM Signing with Cosign
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign SBOM with Cosign
+        run: |
+          START=$(date +%s%N)
+          cosign sign-blob sbom-syft.cdx.json \
+            --bundle sbom.bundle.json \
+            --yes
+          END=$(date +%s%N)
+          echo "COSIGN_TIME=$(( (END-START)/1000000 ))" >> $GITHUB_ENV
+
+      - name: Verify SBOM integrity
+        run: |
+          cosign verify-blob sbom-syft.cdx.json \
+            --bundle sbom.bundle.json \
+            --certificate-identity-regexp=".*" \
+            --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+
+      # Stage 5: Policy Gate
+      - name: Policy Gate
+        run: |
+          CRITICAL=$(cat grype-results.json | \
+            python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          crits=[m for m in d.get('matches',[])
+                 if m.get('vulnerability',{}).get('severity','').lower()=='critical']
+          print(len(crits))
+          ")
+          echo "Critical vulnerabilities: $CRITICAL"
+          if [ "$CRITICAL" -gt "0" ]; then
+            echo "Pipeline blocked: $CRITICAL Critical CVEs detected"
+            exit 1
+          fi
+
+      # Stage 6: Record Metrics
+      - name: Record timing metrics
+        run: |
+          echo "{
+            \"syft_ms\": $SYFT_TIME,
+            \"cdxnpm_ms\": $CDXNPM_TIME,
+            \"cdxgen_ms\": $CDXGEN_TIME,
+            \"grype_ms\": $GRYPE_TIME,
+            \"osv_ms\": $OSV_TIME,
+            \"npmaudit_ms\": $NPMAUDIT_TIME,
+            \"cosign_ms\": $COSIGN_TIME
+          }" > metrics.json
+          cat metrics.json
+
+      # Stage 7: Upload Artifacts
+      - name: Upload all artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: devsecops-artifacts
+          path: |
+            sbom-syft.cdx.json
+            sbom-cdxnpm.cdx.json
+            sbom-cdxgen.cdx.json
+            grype-results.json
+            osv-results.json
+            npm-audit-results.json
+            sbom.bundle.json
+            metrics.json
